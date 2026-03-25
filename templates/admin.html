@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>Admin</title>
+<style>
+:root {
+    --bg:#f7f7f5;
+    --surface:#ffffff;
+    --text:#111111;
+    --muted:#6c6c6c;
+    --border:#e6e6e2;
+}
+
+* { box-sizing:border-box; }
+
+body {
+    margin:0;
+    font-family:"DM Sans", "Segoe UI", Tahoma, sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    padding:24px;
+}
+
+.header {
+    display:flex;
+    justify-content:space-between;
+    align-items:center;
+    margin-bottom:20px;
+}
+
+.card {
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:16px;
+    padding:16px;
+    margin-bottom:16px;
+    display:grid;
+    grid-template-columns:120px 1fr;
+    gap:16px;
+}
+
+.card img {
+    width:120px;
+    height:120px;
+    object-fit:cover;
+    border-radius:12px;
+    border:1px solid var(--border);
+}
+
+label {
+    display:block;
+    font-size:12px;
+    color:var(--muted);
+    margin-bottom:6px;
+}
+
+input {
+    width:100%;
+    padding:8px 10px;
+    border:1px solid var(--border);
+    border-radius:10px;
+    margin-bottom:10px;
+}
+
+button {
+    background:#111;
+    color:white;
+    border:none;
+    padding:10px 12px;
+    border-radius:999px;
+    cursor:pointer;
+    font-weight:600;
+}
+
+.search {
+    display:flex;
+    gap:10px;
+}
+
+.search input {
+    flex:1;
+}
+</style>
+</head>
+<body>
+<div class="header">
+    <div>
+        <h2>Admin - Catégories</h2>
+        <div style="color:var(--muted);font-size:13px;">Modifie catégorie, marque, nom et tags.</div>
+    </div>
+    <div>
+        <a href="/" style="text-decoration:none;color:#111;">Retour au site</a>
+    </div>
+</div>
+
+<form class="search" method="get" action="/admin">
+    <input type="text" name="q" placeholder="Rechercher par msg_id" value="{{ q }}">
+    <button type="submit">Rechercher</button>
+</form>
+
+{% for item in items %}
+<div class="card">
+    <img src="/image/{{ item.msg_id }}" alt="">
+    <form method="post" action="/admin/update">
+        <input type="hidden" name="msg_id" value="{{ item.msg_id }}">
+        <label>Msg ID</label>
+        <input type="text" value="{{ item.msg_id }}" readonly>
+        <label>Nom</label>
+        <input type="text" name="name" value="{{ item.name }}">
+        <label>Catégorie</label>
+        <input type="text" name="category" value="{{ item.category }}">
+        <label>Marque</label>
+        <input type="text" name="brand" value="{{ item.brand }}">
+        <label>Tags (séparés par des virgules)</label>
+        <input type="text" name="tags" value="{{ item.tags }}">
+        <button type="submit">Sauvegarder</button>
+    </form>
+</div>
+{% endfor %}
+</body>
+</html>

@@ -22,3 +22,5 @@ services:
         sync: false
       - key: FLASK_SESSION_SECURE
         value: "1"
+      - key: ADMIN_EMAILS
+        sync: false

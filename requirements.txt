@@ -2,3 +2,4 @@ Flask
 telethon
 authlib
 gunicorn
+Pillow

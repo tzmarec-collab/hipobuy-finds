@@ -596,13 +596,19 @@ body {
         <a href="#">S'identifier</a>
     </div>
     <div class="topbar-main">
-        <div class="logo">HIPOBUY</div>\n<div class="nav-actions">
+        <div class="logo">HIPOBUY</div>
+        <div class="nav-actions">
             <div class="search">
                 <span>Search</span>
                 <input id="searchInput" type="search" placeholder="Rechercher marque, produit, mot-clé">
             </div>
+            <input id="imageSearchInput" type="file" accept="image/*" style="display:none">
+            <button class="link-btn secondary" id="imageSearchBtn">Recherche image</button>
             {% if user %}
             <span class="user-pill">Bonjour, {{ user.name or user.email }}</span>
+            {% if user.email in admin_emails %}
+            <a class="link-btn secondary" href="/admin">Admin</a>
+            {% endif %}
             <a class="link-btn secondary" href="/logout">Déconnexion</a>
             {% else %}
             <a class="link-btn secondary" href="/login">Se connecter</a>
@@ -722,6 +728,7 @@ body {
                 <button class="chip" data-filter-group="promo" data-filter-value="-50">-50%+</button>
                 <button class="chip" data-filter-group="new" data-filter-value="new">Nouveautés</button>
                 <button class="chip" data-filter-group="best" data-filter-value="best">Meilleures ventes</button>
+                <button class="chip" data-filter-group="newbrand" data-filter-value="newbrand">Nouvelle marque</button>
                 <button class="chip" data-filter-group="stock" data-filter-value="in-stock">En stock</button>
                 <button class="chip" data-filter-group="stock" data-filter-value="preorder">Précommande</button>
                 <button class="chip" data-filter-group="delivery" data-filter-value="free">Livraison gratuite</button>
@@ -929,6 +936,7 @@ body {
 let currentQuery = "";
 const activeFilters = new Map();
 const labelMap = new Map();
+let imageSearchIds = null;
 
 function normalizeKey(value){
     return (value || "")
@@ -979,6 +987,7 @@ const FILTER_SYNONYMS = {
     "personnalisable": ["personnalisable", "custom", "personnalise"],
     "lt20l": ["<20l", "20l", "20 l", "moins de 20l"],
     "gt40l": [">40l", "40l", "40 l", "plus de 40l"]
+    ,"newbrand": ["nouvelle marque", "new brand", "newbrand"]
 };
 
 function getFilterTokens(value){
@@ -1019,6 +1028,8 @@ function toggleFilterValue(group, value, label){
 function clearAllFilters(){
     activeFilters.clear();
     document.querySelectorAll(".chip.active").forEach(btn => btn.classList.remove("active"));
+    document.querySelectorAll(".badge.active").forEach(btn => btn.classList.remove("active"));
+    imageSearchIds = null;
     applyFilters();
     renderActiveFilters();
 }
@@ -1104,6 +1115,13 @@ function cardMatches(card){
         return false;
     }
 
+    if(imageSearchIds && imageSearchIds.size > 0){
+        const id = card.dataset.msgId;
+        if(!imageSearchIds.has(id)){
+            return false;
+        }
+    }
+
     for(const [group, selected] of activeFilters.entries()){
         if(group === "category"){
             const cat = normalizeKey(card.dataset.cat);
@@ -1156,6 +1174,18 @@ function renderActiveFilters(){
             });
             container.appendChild(chip);
         }
+    }
+
+    if(imageSearchIds && imageSearchIds.size > 0){
+        const chip = document.createElement("div");
+        chip.className = "active-chip";
+        chip.textContent = "Recherche image";
+        chip.addEventListener("click", () => {
+            imageSearchIds = null;
+            applyFilters();
+            renderActiveFilters();
+        });
+        container.appendChild(chip);
     }
 }
 
@@ -1215,7 +1245,7 @@ function attachFilterHandlers(){
 
 document.addEventListener("DOMContentLoaded", () => {
     const grid = document.querySelector(".grid");
-    const searchInput = document.getElementById("searchInput");
+    const searchInput = document.getElementById("searchInput");\n    const imageInput = document.getElementById("imageSearchInput");\n    const imageBtn = document.getElementById("imageSearchBtn");
     const imgQueue = [];
     let imgLoading = false;
     const stepMs = 12;
@@ -1271,6 +1301,7 @@ document.addEventListener("DOMContentLoaded", () => {
         card.className = "card";
         card.dataset.cat = post.category || "autre";
         card.dataset.brand = post.brand || "autre";
+        card.dataset.msgId = String(post.msg_id || post.image_id || "");
 
         if(post.image_id){
             const img = document.createElement("img");
@@ -1372,6 +1403,15 @@ document.addEventListener("DOMContentLoaded", () => {
         content.appendChild(meta);
         content.appendChild(title);
         content.appendChild(priceRow);
+        if(post.tags && Array.isArray(post.tags) && post.tags.includes("nouvelle marque")){
+            const nb = document.createElement("div");
+            nb.className = "badge clickable";
+            nb.dataset.filterGroup = "newbrand";
+            nb.dataset.filterValue = "newbrand";
+            nb.textContent = "Nouvelle marque";
+            content.appendChild(nb);
+            bindFilterChip(nb);
+        }
         if(links.childElementCount){
             content.appendChild(links);
         }
@@ -1458,6 +1498,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
 </body>
 </html>
+
+
+
+
 
 
 

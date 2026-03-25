@@ -9,6 +9,10 @@ import os
 import threading
 import sqlite3
 import json
+import io
+from PIL import Image
+import urllib.request
+import urllib.error
 
 
 def load_dotenv(path=".env"):
@@ -64,6 +68,12 @@ DB_PATH = os.path.join(os.path.dirname(__file__), "app.db")
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 GOOGLE_REDIRECT_URI = os.getenv("GOOGLE_REDIRECT_URI")
+ADMIN_EMAILS = {e.strip().lower() for e in os.getenv("ADMIN_EMAILS", "").split(",") if e.strip()}
+LOCAL_LLM_ENABLED = os.getenv("LOCAL_LLM_ENABLED", "0") == "1"
+LOCAL_LLM_URL = os.getenv("LOCAL_LLM_URL", "http://localhost:11434/api/generate")
+LOCAL_LLM_MODEL = os.getenv("LOCAL_LLM_MODEL", "")
+LOCAL_LLM_TIMEOUT = float(os.getenv("LOCAL_LLM_TIMEOUT", "12"))
+LOCAL_LLM_MAX_PER_PAGE = int(os.getenv("LOCAL_LLM_MAX_PER_PAGE", "2"))
 
 oauth = OAuth(app)
 GOOGLE_ENABLED = bool(GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET)
@@ -387,6 +397,8 @@ def smart_classify(text):
         if candidate:
             brand = candidate
             add_extra_brand(candidate)
+            if "nouvelle marque" not in tags:
+                tags.append("nouvelle marque")
 
     if category == "autre":
         text_low = normalize_text(text)
@@ -400,6 +412,84 @@ def smart_classify(text):
             category = "chaussure"
 
     return category, brand, name, tags
+
+
+def image_ahash(image_bytes):
+    if not image_bytes:
+        return None
+    try:
+        img = Image.open(io.BytesIO(image_bytes))
+        img = img.convert("L").resize((8, 8), Image.Resampling.LANCZOS)
+        pixels = list(img.getdata())
+        avg = sum(pixels) / len(pixels)
+        bits = 0
+        for i, p in enumerate(pixels):
+            if p > avg:
+                bits |= 1 << i
+        return f"{bits:016x}"
+    except Exception:
+        return None
+
+
+def ensure_image_hash(msg_id, image_bytes):
+    if not image_bytes:
+        return
+    meta = get_post_meta(msg_id)
+    if meta and meta["image_hash"]:
+        return
+    h = image_ahash(image_bytes)
+    if not h:
+        return
+    upsert_post_meta(msg_id, image_hash=h)
+
+
+def hamming_distance_hex(a, b):
+    try:
+        return (int(a, 16) ^ int(b, 16)).bit_count()
+    except Exception:
+        return 64
+
+
+def _local_llm_request(payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        LOCAL_LLM_URL,
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=LOCAL_LLM_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def local_llm_classify(text):
+    if not LOCAL_LLM_ENABLED or not text:
+        return None
+
+    prompt = (
+        "Retourne uniquement du JSON valide avec: category, brand, name, tags.\n"
+        "category et brand courts. tags = liste de mots-clés.\n"
+        f"Texte: {text[:1500]}"
+    )
+
+    model = LOCAL_LLM_MODEL or "local-model"
+    payload = {"model": model, "prompt": prompt, "stream": False}
+    try:
+        data = _local_llm_request(payload)
+        raw = data.get("response") or ""
+        if not raw and "choices" in data:
+            raw = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+        if not raw:
+            return None
+        parsed = json.loads(raw)
+        return {
+            "category": (parsed.get("category") or "").strip().lower(),
+            "brand": (parsed.get("brand") or "").strip().lower(),
+            "name": (parsed.get("name") or "").strip(),
+            "tags": [t.strip().lower() for t in (parsed.get("tags") or []) if str(t).strip()],
+        }
+    except Exception:
+        return None
 
 
 def clean_links(text):
@@ -472,6 +562,7 @@ def _unmark_in_flight(msg_id):
 async def fetch_posts_page(offset_id, limit):
     posts = []
     last_id = None
+    llm_used = 0
 
     await _ensure_connected()
     async for msg in _client.iter_messages(channel, limit=limit, offset_id=offset_id):
@@ -503,16 +594,33 @@ async def fetch_posts_page(offset_id, limit):
                 tags = tags or t
                 upsert_post_meta(msg.id, category=category, brand=brand, name=name, tags=tags)
         else:
-            category, brand, name, tags = smart_classify(text)
+            used_llm = False
+            if LOCAL_LLM_ENABLED and llm_used < LOCAL_LLM_MAX_PER_PAGE:
+                llm_used += 1
+                llm = await asyncio.to_thread(local_llm_classify, text)
+                if llm:
+                    category = llm.get("category") or ""
+                    brand = llm.get("brand") or ""
+                    name = llm.get("name") or ""
+                    tags = llm.get("tags") or []
+                    used_llm = True
+            if not used_llm:
+                category, brand, name, tags = smart_classify(text)
+
+            if brand and brand not in BRANDS:
+                add_extra_brand(brand)
+                if "nouvelle marque" not in tags:
+                    tags.append("nouvelle marque")
             upsert_post_meta(msg.id, category=category, brand=brand, name=name, tags=tags)
 
-        posts.append({
-            "text": clean_links(text),
-            "image_id": msg.id if msg.photo else None,
-            "category": category or "autre",
-            "brand": brand or "autre",
-            "name": name,
-            "tags": tags
+    posts.append({
+        "text": clean_links(text),
+        "msg_id": msg.id,
+        "image_id": msg.id if msg.photo else None,
+        "category": category or "autre",
+        "brand": brand or "autre",
+        "name": name,
+        "tags": tags
         })
         last_id = msg.id
 
@@ -590,6 +698,7 @@ def init_db():
                 brand TEXT,
                 name TEXT,
                 tags TEXT,
+                image_hash TEXT,
                 updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
@@ -601,6 +710,9 @@ def init_db():
             )
             """
         )
+        cols = [row["name"] for row in conn.execute("PRAGMA table_info(post_meta)").fetchall()]
+        if "image_hash" not in cols:
+            conn.execute("ALTER TABLE post_meta ADD COLUMN image_hash TEXT")
         conn.commit()
 
 
@@ -651,26 +763,27 @@ def add_extra_brand(name):
 def get_post_meta(msg_id):
     with get_db() as conn:
         return conn.execute(
-            "SELECT msg_id, category, brand, name, tags FROM post_meta WHERE msg_id = ?",
+            "SELECT msg_id, category, brand, name, tags, image_hash FROM post_meta WHERE msg_id = ?",
             (msg_id,),
         ).fetchone()
 
 
-def upsert_post_meta(msg_id, category=None, brand=None, name=None, tags=None):
+def upsert_post_meta(msg_id, category=None, brand=None, name=None, tags=None, image_hash=None):
     tags_json = json.dumps(tags or [], ensure_ascii=False)
     with get_db() as conn:
         conn.execute(
             """
-            INSERT INTO post_meta (msg_id, category, brand, name, tags, updated_at)
-            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            INSERT INTO post_meta (msg_id, category, brand, name, tags, image_hash, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
             ON CONFLICT(msg_id) DO UPDATE SET
                 category = excluded.category,
                 brand = excluded.brand,
                 name = excluded.name,
                 tags = excluded.tags,
+                image_hash = COALESCE(excluded.image_hash, post_meta.image_hash),
                 updated_at = CURRENT_TIMESTAMP
             """,
-            (msg_id, category, brand, name, tags_json),
+            (msg_id, category, brand, name, tags_json, image_hash),
         )
         conn.commit()
 
@@ -722,6 +835,12 @@ load_extra_brands()
 def image(msg_id):
     cache_path = _cache_path(msg_id)
     if os.path.exists(cache_path):
+        try:
+            with open(cache_path, "rb") as f:
+                data = f.read()
+            ensure_image_hash(msg_id, data)
+        except Exception:
+            pass
         resp = send_file(cache_path, mimetype="image/jpeg", conditional=True)
         resp.headers["Cache-Control"] = "public, max-age=86400"
         return resp
@@ -733,6 +852,7 @@ def image(msg_id):
                 f.write(data)
         except Exception:
             pass
+        ensure_image_hash(msg_id, data)
         return Response(
             data,
             mimetype="image/jpeg",
@@ -747,6 +867,7 @@ def image(msg_id):
     if data is None:
         return "", 404
 
+    ensure_image_hash(msg_id, data)
     _cache_put(msg_id, data)
 
     try:
@@ -764,7 +885,12 @@ def image(msg_id):
 
 @app.route("/")
 def home():
-    return render_template("index.html", user=current_user(), google_enabled=GOOGLE_ENABLED)
+    return render_template(
+        "index.html",
+        user=current_user(),
+        google_enabled=GOOGLE_ENABLED,
+        admin_emails=ADMIN_EMAILS,
+    )
 
 
 @app.route("/signup", methods=["GET", "POST"])
@@ -809,6 +935,66 @@ def login():
 def logout():
     session.clear()
     return redirect(url_for("home"))
+
+
+def is_admin_user():
+    user = current_user()
+    if not user:
+        return False
+    if not ADMIN_EMAILS:
+        return False
+    return user["email"].lower() in ADMIN_EMAILS
+
+
+@app.route("/admin")
+def admin():
+    if not is_admin_user():
+        return "Accès refusé.", 403
+    q = request.args.get("q", "").strip()
+    with get_db() as conn:
+        if q.isdigit():
+            rows = conn.execute(
+                "SELECT msg_id, category, brand, name, tags FROM post_meta WHERE msg_id = ?",
+                (int(q),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT msg_id, category, brand, name, tags FROM post_meta ORDER BY updated_at DESC LIMIT 50"
+            ).fetchall()
+    items = []
+    for row in rows:
+        tags = []
+        if row["tags"]:
+            try:
+                tags = json.loads(row["tags"])
+            except Exception:
+                tags = []
+        items.append({
+            "msg_id": row["msg_id"],
+            "category": row["category"] or "",
+            "brand": row["brand"] or "",
+            "name": row["name"] or "",
+            "tags": ", ".join(tags) if tags else ""
+        })
+    return render_template("admin.html", items=items, q=q, user=current_user())
+
+
+@app.route("/admin/update", methods=["POST"])
+def admin_update():
+    if not is_admin_user():
+        return "Accès refusé.", 403
+    msg_id = request.form.get("msg_id", "").strip()
+    if not msg_id.isdigit():
+        return redirect(url_for("admin"))
+    category = request.form.get("category", "").strip().lower()
+    brand = request.form.get("brand", "").strip().lower()
+    name = request.form.get("name", "").strip()
+    tags_raw = request.form.get("tags", "")
+    tags = [t.strip().lower() for t in tags_raw.split(",") if t.strip()]
+    upsert_post_meta(int(msg_id), category=category, brand=brand, name=name, tags=tags)
+    if brand and brand not in BRANDS:
+        add_extra_brand(brand)
+    return redirect(url_for("admin", q=msg_id))
 
 
 @app.route("/auth/google/login")
@@ -876,6 +1062,29 @@ def posts():
         "posts": posts,
         "next_offset": next_offset
     })
+
+
+@app.route("/search/image", methods=["POST"])
+def search_image():
+    if "image" not in request.files:
+        return jsonify({"error": "missing image"}), 400
+    data = request.files["image"].read()
+    target = image_ahash(data)
+    if not target:
+        return jsonify({"error": "invalid image"}), 400
+
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT msg_id, image_hash FROM post_meta WHERE image_hash IS NOT NULL"
+        ).fetchall()
+
+    scored = []
+    for row in rows:
+        dist = hamming_distance_hex(target, row["image_hash"])
+        scored.append((dist, row["msg_id"]))
+    scored.sort(key=lambda x: x[0])
+    top = [msg_id for _, msg_id in scored[:40]]
+    return jsonify({"matches": top})
     
 
 if __name__ == "__main__":
