@@ -384,6 +384,10 @@ body {
     transition:transform 0.2s ease, box-shadow 0.2s ease;
 }
 
+.card.clickable {
+    cursor:pointer;
+}
+
 .card:hover {
     transform:translateY(-4px);
 }
@@ -446,6 +450,14 @@ body {
     display:flex;
     align-items:baseline;
     gap:8px;
+}
+
+.price-row.clickable {
+    cursor:pointer;
+}
+
+.pill.clickable {
+    cursor:pointer;
 }
 
 .price {
@@ -575,16 +587,7 @@ body {
         <a href="#">S'identifier</a>
     </div>
     <div class="topbar-main">
-        <div class="logo">HIPOBUY</div>
-        <nav class="main-nav">
-            <a href="#">Nouveau</a>
-            <a href="#">Homme</a>
-            <a href="#">Femme</a>
-            <a href="#">Enfant</a>
-            <a href="#">Sport</a>
-            <a href="#">NikeSKIMS</a>
-        </nav>
-        <div class="nav-actions">
+        <div class="logo">HIPOBUY</div>\n<div class="nav-actions">
             <div class="search">
                 <span>Search</span>
                 <input id="searchInput" type="search" placeholder="Rechercher marque, produit, mot-clé">
@@ -990,6 +993,20 @@ function removeFilter(group, value){
     }
 }
 
+function toggleFilterValue(group, value, label){
+    const set = activeFilters.get(group) || new Set();
+    if(set.has(value)){
+        removeFilter(group, value);
+    } else {
+        addFilter(group, value);
+    }
+    if(label){
+        labelMap.set(`${group}:${value}`, label);
+    }
+    applyFilters();
+    renderActiveFilters();
+}
+
 function clearAllFilters(){
     activeFilters.clear();
     document.querySelectorAll(".chip.active").forEach(btn => btn.classList.remove("active"));
@@ -1061,6 +1078,13 @@ function matchesTextGroup(group, selected, hay){
         }
     }
     return false;
+}
+
+function priceBucket(value){
+    if(value <= 20) return "0-20";
+    if(value <= 50) return "20-50";
+    if(value <= 100) return "50-100";
+    return "100+";
 }
 
 function cardMatches(card){
@@ -1238,7 +1262,7 @@ document.addEventListener("DOMContentLoaded", () => {
         const productLinks = hipobuyLinks.filter(h => !h.includes("YOTZ1WXGQ"));
 
         const plain = tmp.textContent || "";
-        const name = extractName(plain) || (post.brand ? post.brand.toUpperCase() : "Produit");
+        const name = (post.name || "").trim() || extractName(plain) || (post.brand ? post.brand.toUpperCase() : "Produit");
         const priceInfo = extractPrice(plain);
         let desc = plain
             .replace(/https?:\/\/\S+/gi, " ")
@@ -1257,11 +1281,11 @@ document.addEventListener("DOMContentLoaded", () => {
         meta.className = "meta";
 
         const brand = document.createElement("span");
-        brand.className = "pill brand";
+        brand.className = "pill brand clickable";
         brand.textContent = post.brand || "autre";
 
         const cat = document.createElement("span");
-        cat.className = "pill";
+        cat.className = "pill clickable";
         cat.textContent = post.category || "autre";
 
         meta.appendChild(brand);
@@ -1323,7 +1347,36 @@ document.addEventListener("DOMContentLoaded", () => {
         }
         card.appendChild(content);
 
-        const searchable = [name, post.brand || "", desc, plain].join(" ");
+        if(mainProduct){
+            card.dataset.productLink = mainProduct;
+            card.classList.add("clickable");
+            card.addEventListener("click", (e) => {
+                if(e.target.closest("a") || e.target.closest("button")) return;
+                window.open(mainProduct, "_blank");
+            });
+        }
+
+        brand.addEventListener("click", (e) => {
+            e.stopPropagation();
+            toggleFilterValue("brand", brand.textContent.toLowerCase(), brand.textContent);
+        });
+
+        cat.addEventListener("click", (e) => {
+            e.stopPropagation();
+            toggleFilterValue("category", cat.textContent.toLowerCase(), cat.textContent);
+        });
+
+        if(priceInfo){
+            priceRow.classList.add("clickable");
+            priceRow.addEventListener("click", (e) => {
+                e.stopPropagation();
+                const bucket = priceBucket(priceInfo.value);
+                toggleFilterValue("price", bucket, priceRow.textContent.trim());
+            });
+        }
+
+        const tagText = Array.isArray(post.tags) ? post.tags.join(" ") : "";
+        const searchable = [name, post.brand || "", desc, tagText, plain].join(" ");
         const normalized = normalizeKey(searchable);
         card.dataset.search = normalized;
         if(priceInfo){
@@ -1372,6 +1425,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
 </body>
 </html>
+
 
 
 

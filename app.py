@@ -8,6 +8,9 @@ import asyncio
 import os
 import threading
 import sqlite3
+import json
+import urllib.request
+import urllib.error
 
 
 def load_dotenv(path=".env"):
@@ -34,6 +37,12 @@ api_id = os.getenv("TELEGRAM_API_ID")
 api_hash = os.getenv("TELEGRAM_API_HASH")
 channel = os.getenv("TELEGRAM_CHANNEL", "qchipobuyfinds")
 session_string = os.getenv("TELEGRAM_SESSION_STRING")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "6"))
+AI_MAX_PER_PAGE = int(os.getenv("AI_MAX_PER_PAGE", "4"))
+AI_ENABLED = bool(OPENAI_API_KEY)
 
 if not api_id or not api_hash:
     raise RuntimeError("Missing TELEGRAM_API_ID or TELEGRAM_API_HASH environment variables")
@@ -239,6 +248,85 @@ def clean_links(text):
 
 # --------- TELEGRAM ---------
 
+def _openai_request(payload):
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/responses",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+
+def _response_text(data):
+    for item in data.get("output", []):
+        for content in item.get("content", []):
+            if content.get("type") == "output_text":
+                return content.get("text", "")
+    return ""
+
+
+def ai_classify(text):
+    if not AI_ENABLED:
+        return None
+    if not text:
+        return None
+
+    prompt = (
+        "Tu es un assistant de classification e-commerce. "
+        "Retourne uniquement du JSON valide avec les champs: "
+        "category, brand, name, tags. "
+        "category et brand doivent etre courts. "
+        "tags est une liste de mots-clés utiles."
+    )
+
+    payload = {
+        "model": OPENAI_MODEL,
+        "input": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text[:2000]},
+        ],
+        "max_output_tokens": 200,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "product_classification",
+                "schema": {
+                    "type": "object",
+                    "properties": {
+                        "category": {"type": "string"},
+                        "brand": {"type": "string"},
+                        "name": {"type": "string"},
+                        "tags": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["category", "brand", "name", "tags"],
+                    "additionalProperties": False,
+                },
+                "strict": True,
+            },
+        },
+    }
+
+    try:
+        data = _openai_request(payload)
+        raw = _response_text(data)
+        parsed = json.loads(raw) if raw else None
+        if not parsed:
+            return None
+        return {
+            "category": (parsed.get("category") or "").strip().lower(),
+            "brand": (parsed.get("brand") or "").strip().lower(),
+            "name": (parsed.get("name") or "").strip(),
+            "tags": [t.strip().lower() for t in (parsed.get("tags") or []) if str(t).strip()],
+        }
+    except Exception:
+        return None
+
 _loop = asyncio.new_event_loop()
 _loop_thread = threading.Thread(target=_loop.run_forever, daemon=True)
 _loop_thread.start()
@@ -293,6 +381,7 @@ def _unmark_in_flight(msg_id):
 async def fetch_posts_page(offset_id, limit):
     posts = []
     last_id = None
+    ai_used = 0
 
     await _ensure_connected()
     async for msg in _client.iter_messages(channel, limit=limit, offset_id=offset_id):
@@ -300,12 +389,41 @@ async def fetch_posts_page(offset_id, limit):
             continue
 
         text = msg.text or ""
+        category = detect_category(text)
+        brand = detect_brand(text)
+        name = ""
+        tags = []
+
+        meta = get_post_meta(msg.id)
+        if meta:
+            if meta["category"]:
+                category = meta["category"]
+            if meta["brand"]:
+                brand = meta["brand"]
+            if meta["name"]:
+                name = meta["name"]
+            if meta["tags"]:
+                try:
+                    tags = json.loads(meta["tags"])
+                except Exception:
+                    tags = []
+        elif AI_ENABLED and ai_used < AI_MAX_PER_PAGE and text:
+            ai_used += 1
+            ai = await asyncio.to_thread(ai_classify, text)
+            if ai:
+                category = ai.get("category") or category
+                brand = ai.get("brand") or brand
+                name = ai.get("name") or ""
+                tags = ai.get("tags") or []
+                upsert_post_meta(msg.id, category=category, brand=brand, name=name, tags=tags)
 
         posts.append({
             "text": clean_links(text),
             "image_id": msg.id if msg.photo else None,
-            "category": detect_category(text),
-            "brand": detect_brand(text)
+            "category": category,
+            "brand": brand,
+            "name": name,
+            "tags": tags
         })
         last_id = msg.id
 
@@ -375,6 +493,18 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS post_meta (
+                msg_id INTEGER PRIMARY KEY,
+                category TEXT,
+                brand TEXT,
+                name TEXT,
+                tags TEXT,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
         conn.commit()
 
 
@@ -400,6 +530,33 @@ def get_user_by_google_sub(sub):
             "SELECT id, email, name, google_sub FROM users WHERE google_sub = ?",
             (sub,),
         ).fetchone()
+
+
+def get_post_meta(msg_id):
+    with get_db() as conn:
+        return conn.execute(
+            "SELECT msg_id, category, brand, name, tags FROM post_meta WHERE msg_id = ?",
+            (msg_id,),
+        ).fetchone()
+
+
+def upsert_post_meta(msg_id, category=None, brand=None, name=None, tags=None):
+    tags_json = json.dumps(tags or [], ensure_ascii=False)
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO post_meta (msg_id, category, brand, name, tags, updated_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(msg_id) DO UPDATE SET
+                category = excluded.category,
+                brand = excluded.brand,
+                name = excluded.name,
+                tags = excluded.tags,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (msg_id, category, brand, name, tags_json),
+        )
+        conn.commit()
 
 
 def create_user(email, password=None, name=None, google_sub=None):
