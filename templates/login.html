@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>Connexion</title>
+<style>
+:root {
+    --bg:#f7f7f5;
+    --surface:#ffffff;
+    --text:#111111;
+    --muted:#6c6c6c;
+    --border:#e6e6e2;
+    --accent:#111111;
+}
+
+* { box-sizing:border-box; }
+
+body {
+    margin:0;
+    font-family:"DM Sans", "Segoe UI", Tahoma, sans-serif;
+    background:var(--bg);
+    color:var(--text);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    min-height:100vh;
+    padding:24px;
+}
+
+.card {
+    width:100%;
+    max-width:420px;
+    background:var(--surface);
+    border:1px solid var(--border);
+    border-radius:18px;
+    padding:24px;
+    box-shadow:0 18px 40px rgba(0,0,0,0.08);
+}
+
+h1 {
+    margin:0 0 8px;
+    font-size:24px;
+}
+
+p {
+    margin:0 0 18px;
+    color:var(--muted);
+    font-size:14px;
+}
+
+label {
+    display:block;
+    font-size:13px;
+    margin-bottom:6px;
+}
+
+input {
+    width:100%;
+    padding:10px 12px;
+    border-radius:10px;
+    border:1px solid var(--border);
+    margin-bottom:14px;
+    font-size:14px;
+}
+
+button, .btn {
+    width:100%;
+    padding:10px 12px;
+    border-radius:999px;
+    border:1px solid var(--accent);
+    background:var(--accent);
+    color:white;
+    font-weight:600;
+    cursor:pointer;
+    text-decoration:none;
+    display:inline-block;
+    text-align:center;
+}
+
+.btn.secondary {
+    background:transparent;
+    color:var(--accent);
+    margin-top:10px;
+}
+
+.error {
+    background:#ffe9e9;
+    color:#a40000;
+    border:1px solid #f5bcbc;
+    padding:10px 12px;
+    border-radius:10px;
+    font-size:13px;
+    margin-bottom:12px;
+}
+
+.links {
+    margin-top:14px;
+    text-align:center;
+    font-size:13px;
+}
+
+.links a {
+    color:var(--accent);
+    text-decoration:none;
+}
+</style>
+</head>
+<body>
+<div class="card">
+    <h1>Se connecter</h1>
+    <p>Accède à ton espace Hipobuy.</p>
+
+    {% if error %}
+    <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" required>
+
+        <label for="password">Mot de passe</label>
+        <input id="password" name="password" type="password" required>
+
+        <button type="submit">Connexion</button>
+    </form>
+
+    {% if google_enabled %}
+    <a class="btn secondary" href="/auth/google/login">Continuer avec Google</a>
+    {% endif %}
+
+    <div class="links">
+        Pas encore de compte ? <a href="/signup">Créer un compte</a>
+    </div>
+</div>
+</body>
+</html>

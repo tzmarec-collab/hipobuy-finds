@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+instance/
+.env
+.env.*
+cache_images/
+session.session
+session.session-journal
+app.db
+hipobuy/
