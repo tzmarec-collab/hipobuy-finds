@@ -1,4 +1,5 @@
 from telethon import TelegramClient
+from telethon.sessions import StringSession
 from flask import Flask, render_template, Response, jsonify, request, send_file, redirect, url_for, session
 from authlib.integrations.flask_client import OAuth
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -32,6 +33,7 @@ load_dotenv()
 api_id = os.getenv("TELEGRAM_API_ID")
 api_hash = os.getenv("TELEGRAM_API_HASH")
 channel = os.getenv("TELEGRAM_CHANNEL", "qchipobuyfinds")
+session_string = os.getenv("TELEGRAM_SESSION_STRING")
 
 if not api_id or not api_hash:
     raise RuntimeError("Missing TELEGRAM_API_ID or TELEGRAM_API_HASH environment variables")
@@ -241,7 +243,10 @@ _loop = asyncio.new_event_loop()
 _loop_thread = threading.Thread(target=_loop.run_forever, daemon=True)
 _loop_thread.start()
 
-_client = TelegramClient("session", api_id, api_hash)
+if session_string:
+    _client = TelegramClient(StringSession(session_string), api_id, api_hash)
+else:
+    _client = TelegramClient("session", api_id, api_hash)
 
 
 def run_async(coro):
@@ -600,4 +605,5 @@ def posts():
     
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    port = int(os.getenv("PORT", "10000"))
+    app.run(host="0.0.0.0", port=port)
