@@ -233,6 +233,15 @@ body {
     font-size:12px;
     font-weight:600;
 }
+
+.badge.clickable {
+    cursor:pointer;
+}
+
+.badge.active {
+    background:var(--text);
+    color:white;
+}
 .results-bar {
     display:flex;
     align-items:center;
@@ -620,13 +629,13 @@ body {
                 <a class="hero-btn secondary" href="#filters">Explorer les filtres</a>
             </div>
         </div>
-        <div class="hero-card">
+            <div class="hero-card">
             <h3>Focus rapide</h3>
             <div class="hero-badges">
-                <div class="badge">Nouveautés</div>
-                <div class="badge">Promo -20%</div>
-                <div class="badge">Livraison rapide</div>
-                <div class="badge">Top marques</div>
+                <div class="badge clickable" data-filter-group="new" data-filter-value="new">Nouveautés</div>
+                <div class="badge clickable" data-filter-group="promo" data-filter-value="-20">Promo -20%</div>
+                <div class="badge clickable" data-filter-group="delivery" data-filter-value="fast">Livraison rapide</div>
+                <div class="badge clickable" data-filter-group="best" data-filter-value="best">Top marques</div>
             </div>
         </div>
     </div>
@@ -651,7 +660,7 @@ body {
 
         <div class="filter-section">
             <div class="filter-label">Categories</div>
-            <div class="chips">
+            <div class="chips" id="categoryChips">
                 <button class="chip" data-filter-group="category" data-filter-value="haut">Haut</button>
                 <button class="chip" data-filter-group="category" data-filter-value="bas">Bas</button>
                 <button class="chip" data-filter-group="category" data-filter-value="chaussure">Chaussures</button>
@@ -676,7 +685,7 @@ body {
 
         <div class="filter-section">
             <div class="filter-label">Marques</div>
-            <div class="chips scroll">
+            <div class="chips scroll" id="brandChips">
                 <button class="chip" data-filter-group="brand" data-filter-value="nike">Nike</button>
                 <button class="chip" data-filter-group="brand" data-filter-value="adidas">Adidas</button>
                 <button class="chip" data-filter-group="brand" data-filter-value="puma">Puma</button>
@@ -1157,25 +1166,46 @@ function applyFilters(){
     updateResultsCount();
 }
 
-function attachFilterHandlers(){
-    document.querySelectorAll(".chip[data-filter-group]").forEach(btn => {
-        const group = btn.dataset.filterGroup;
-        const value = btn.dataset.filterValue;
-        const labelKey = `${group}:${value}`;
-        if(!labelMap.has(labelKey)){
-            labelMap.set(labelKey, btn.textContent.trim());
+function bindFilterChip(btn){
+    if(btn.dataset.bound) return;
+    btn.dataset.bound = "1";
+    const group = btn.dataset.filterGroup;
+    const value = btn.dataset.filterValue;
+    const labelKey = `${group}:${value}`;
+    if(!labelMap.has(labelKey)){
+        labelMap.set(labelKey, btn.textContent.trim());
+    }
+    btn.addEventListener("click", () => {
+        const isActive = btn.classList.toggle("active");
+        if(isActive){
+            addFilter(group, value);
+        } else {
+            removeFilter(group, value);
         }
-        btn.addEventListener("click", () => {
-            const isActive = btn.classList.toggle("active");
-            if(isActive){
-                addFilter(group, value);
-            } else {
-                removeFilter(group, value);
-            }
-            applyFilters();
-            renderActiveFilters();
-        });
+        applyFilters();
+        renderActiveFilters();
     });
+}
+
+function ensureFilterChip(group, value, label, containerId){
+    if(!value) return;
+    const normalized = normalizeKey(value);
+    if(!normalized) return;
+    const existing = document.querySelector(`.chip[data-filter-group='${group}'][data-filter-value='${normalized}']`);
+    if(existing) return;
+    const container = document.getElementById(containerId);
+    if(!container) return;
+    const btn = document.createElement("button");
+    btn.className = "chip";
+    btn.dataset.filterGroup = group;
+    btn.dataset.filterValue = normalized;
+    btn.textContent = label || value;
+    container.appendChild(btn);
+    bindFilterChip(btn);
+}
+
+function attachFilterHandlers(){
+    document.querySelectorAll(".chip[data-filter-group], .badge[data-filter-group]").forEach(bindFilterChip);
 
     const clearBtn = document.getElementById("clearFilters");
     if(clearBtn){
@@ -1290,6 +1320,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
         meta.appendChild(brand);
         meta.appendChild(cat);
+
+        ensureFilterChip("brand", post.brand, brand.textContent, "brandChips");
+        ensureFilterChip("category", post.category, cat.textContent, "categoryChips");
 
         const title = document.createElement("div");
         title.className = "title";

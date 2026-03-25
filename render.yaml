@@ -22,11 +22,3 @@ services:
         sync: false
       - key: FLASK_SESSION_SECURE
         value: "1"
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: OPENAI_MODEL
-        value: gpt-4.1-mini
-      - key: OPENAI_TIMEOUT
-        value: "6"
-      - key: AI_MAX_PER_PAGE
-        value: "4"

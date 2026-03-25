@@ -9,8 +9,6 @@ import os
 import threading
 import sqlite3
 import json
-import urllib.request
-import urllib.error
 
 
 def load_dotenv(path=".env"):
@@ -38,11 +36,6 @@ api_hash = os.getenv("TELEGRAM_API_HASH")
 channel = os.getenv("TELEGRAM_CHANNEL", "qchipobuyfinds")
 session_string = os.getenv("TELEGRAM_SESSION_STRING")
 
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
-OPENAI_TIMEOUT = float(os.getenv("OPENAI_TIMEOUT", "6"))
-AI_MAX_PER_PAGE = int(os.getenv("AI_MAX_PER_PAGE", "4"))
-AI_ENABLED = bool(OPENAI_API_KEY)
 
 if not api_id or not api_hash:
     raise RuntimeError("Missing TELEGRAM_API_ID or TELEGRAM_API_HASH environment variables")
@@ -94,6 +87,10 @@ CATEGORIES = {
     "sport": ["nike", "adidas", "puma"],
     "tech": ["airpods", "iphone"],
     "bijoux": ["chain", "ring"],
+    "sac": ["sac", "bag", "backpack", "tote", "banane", "valise", "pochette"],
+    "parfum": ["parfum", "perfume", "eau de parfum", "eau de toilette"],
+    "beaute": ["beauty", "makeup", "maquillage", "skincare", "creme"],
+    "lunettes": ["sunglasses", "lunettes", "ray-ban", "ray ban", "oakley"],
 }
 
 BRANDS = [
@@ -214,22 +211,195 @@ BRANDS = [
     "new balance"
 ]
 
+BRANDS_EXTRA = set()
+
+BRAND_STOPWORDS = {
+    "hipobuy", "coupon", "price", "promo", "soldes", "new", "find",
+    "official", "spreadsheet", "article", "product", "item", "qc",
+}
+
+COLOR_WORDS = {
+    "noir": ["noir", "black"],
+    "blanc": ["blanc", "white"],
+    "gris": ["gris", "grey", "gray"],
+    "bleu": ["bleu", "blue"],
+    "rouge": ["rouge", "red"],
+    "vert": ["vert", "green"],
+    "beige": ["beige", "sand"],
+    "marron": ["marron", "brown"],
+    "rose": ["rose", "pink"],
+    "violet": ["violet", "purple"],
+    "multicolore": ["multi", "multicolore", "multicolor"],
+}
+
+MATERIAL_WORDS = {
+    "coton": ["coton", "cotton"],
+    "polyester": ["polyester"],
+    "laine": ["laine", "wool"],
+    "denim": ["denim", "jean"],
+    "cuir": ["cuir", "leather"],
+    "lin": ["lin", "linen"],
+    "soie": ["soie", "silk"],
+    "cachemire": ["cachemire", "cashmere"],
+    "nylon": ["nylon"],
+    "toile": ["toile", "canvas"],
+}
+
+STYLE_WORDS = {
+    "oversized": ["oversized"],
+    "slim": ["slim"],
+    "regular": ["regular"],
+    "skinny": ["skinny"],
+    "bootcut": ["bootcut"],
+}
+
+GENDER_WORDS = {
+    "homme": ["homme", "men", "male"],
+    "femme": ["femme", "women", "female"],
+    "enfant": ["enfant", "kids", "child", "boy", "girl"],
+    "unisexe": ["unisexe", "unisex"],
+}
+
+SEASON_WORDS = {
+    "ete": ["ete", "été", "summer"],
+    "hiver": ["hiver", "winter"],
+    "printemps": ["printemps", "spring"],
+    "automne": ["automne", "fall"],
+}
+
+OCCASION_WORDS = {
+    "sport": ["sport", "running", "training", "gym"],
+    "soiree": ["soiree", "soirée", "party"],
+    "travail": ["work", "office", "travail"],
+    "voyage": ["voyage", "travel"],
+    "quotidien": ["daily", "casual", "quotidien"],
+}
+
 # --------- DETECTION ---------
 
+def normalize_text(text):
+    return re.sub(r"\s+", " ", (text or "").lower()).strip()
+
+
+def _all_brands():
+    return sorted(set(BRANDS) | BRANDS_EXTRA, key=len, reverse=True)
+
+
+def extract_name(text):
+    if not text:
+        return ""
+    m = re.search(r"(?:article|produit|product|item)\s*[:\-]\s*([^\n\r|]+)", text, re.I)
+    if m:
+        name = m.group(1)
+    else:
+        lines = [l.strip() for l in text.splitlines() if l.strip()]
+        name = lines[0] if lines else ""
+    name = re.sub(r"https?://\S+", "", name)
+    name = re.sub(r"[\[\]\*]+", " ", name)
+    name = re.sub(r"\s{2,}", " ", name).strip()
+    return name[:120]
+
+
+def extract_brand_candidate(text):
+    m = re.search(r"(?:brand|marque)\s*[:\-]\s*([A-Za-z0-9&' .-]{2,30})", text, re.I)
+    if m:
+        candidate = m.group(1)
+    else:
+        name = extract_name(text)
+        candidate = name.split(" ")[0] if name else ""
+    candidate = re.sub(r"[^A-Za-z0-9&' .-]", " ", candidate)
+    candidate = re.sub(r"\s{2,}", " ", candidate).strip()
+    if not candidate:
+        return ""
+    low = candidate.lower()
+    if low in BRAND_STOPWORDS or len(low) < 2:
+        return ""
+    return low
+
+
 def detect_category(text):
-    text = text.lower()
+    text_low = normalize_text(text)
     for cat, words in CATEGORIES.items():
-        if any(w in text for w in words):
+        if any(w in text_low for w in words):
             return cat
+    if "parfum" in text_low or "perfume" in text_low:
+        return "parfum"
+    if "sac" in text_low or "bag" in text_low:
+        return "sac"
     return "autre"
 
 
 def detect_brand(text):
-    text = text.lower()
-    for brand in BRANDS:
-        if brand in text:
+    text_low = normalize_text(text)
+    for brand in _all_brands():
+        if brand in text_low:
             return brand
     return "autre"
+
+
+def extract_tags(text):
+    text_low = normalize_text(text)
+    tags = set()
+
+    for tag, words in COLOR_WORDS.items():
+        if any(w in text_low for w in words):
+            tags.add(tag)
+
+    for tag, words in MATERIAL_WORDS.items():
+        if any(w in text_low for w in words):
+            tags.add(tag)
+
+    for tag, words in STYLE_WORDS.items():
+        if any(w in text_low for w in words):
+            tags.add(tag)
+
+    for tag, words in GENDER_WORDS.items():
+        if any(w in text_low for w in words):
+            tags.add(tag)
+
+    for tag, words in SEASON_WORDS.items():
+        if any(w in text_low for w in words):
+            tags.add(tag)
+
+    for tag, words in OCCASION_WORDS.items():
+        if any(w in text_low for w in words):
+            tags.add(tag)
+
+    size_matches = re.findall(r"\b(xs|s|m|l|xl|xxl|xxxl)\b", text_low)
+    for s in size_matches:
+        tags.add(s)
+
+    shoe_sizes = re.findall(r"\b(3[5-9]|4[0-6])\b", text_low)
+    for s in shoe_sizes:
+        tags.add(f"pointure {s}")
+
+    return sorted(tags)
+
+
+def smart_classify(text):
+    category = detect_category(text)
+    brand = detect_brand(text)
+    name = extract_name(text)
+    tags = extract_tags(text)
+
+    if brand == "autre":
+        candidate = extract_brand_candidate(text)
+        if candidate:
+            brand = candidate
+            add_extra_brand(candidate)
+
+    if category == "autre":
+        text_low = normalize_text(text)
+        if "parfum" in text_low or "perfume" in text_low:
+            category = "parfum"
+        elif "sac" in text_low or "bag" in text_low:
+            category = "sac"
+        elif "montre" in text_low or "watch" in text_low:
+            category = "montre"
+        elif "baskets" in text_low or "sneaker" in text_low:
+            category = "chaussure"
+
+    return category, brand, name, tags
 
 
 def clean_links(text):
@@ -247,85 +417,6 @@ def clean_links(text):
 
 
 # --------- TELEGRAM ---------
-
-def _openai_request(payload):
-    data = json.dumps(payload).encode("utf-8")
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=data,
-        headers={
-            "Authorization": f"Bearer {OPENAI_API_KEY}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req, timeout=OPENAI_TIMEOUT) as resp:
-        return json.loads(resp.read().decode("utf-8"))
-
-
-def _response_text(data):
-    for item in data.get("output", []):
-        for content in item.get("content", []):
-            if content.get("type") == "output_text":
-                return content.get("text", "")
-    return ""
-
-
-def ai_classify(text):
-    if not AI_ENABLED:
-        return None
-    if not text:
-        return None
-
-    prompt = (
-        "Tu es un assistant de classification e-commerce. "
-        "Retourne uniquement du JSON valide avec les champs: "
-        "category, brand, name, tags. "
-        "category et brand doivent etre courts. "
-        "tags est une liste de mots-clés utiles."
-    )
-
-    payload = {
-        "model": OPENAI_MODEL,
-        "input": [
-            {"role": "system", "content": prompt},
-            {"role": "user", "content": text[:2000]},
-        ],
-        "max_output_tokens": 200,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "product_classification",
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "category": {"type": "string"},
-                        "brand": {"type": "string"},
-                        "name": {"type": "string"},
-                        "tags": {"type": "array", "items": {"type": "string"}},
-                    },
-                    "required": ["category", "brand", "name", "tags"],
-                    "additionalProperties": False,
-                },
-                "strict": True,
-            },
-        },
-    }
-
-    try:
-        data = _openai_request(payload)
-        raw = _response_text(data)
-        parsed = json.loads(raw) if raw else None
-        if not parsed:
-            return None
-        return {
-            "category": (parsed.get("category") or "").strip().lower(),
-            "brand": (parsed.get("brand") or "").strip().lower(),
-            "name": (parsed.get("name") or "").strip(),
-            "tags": [t.strip().lower() for t in (parsed.get("tags") or []) if str(t).strip()],
-        }
-    except Exception:
-        return None
 
 _loop = asyncio.new_event_loop()
 _loop_thread = threading.Thread(target=_loop.run_forever, daemon=True)
@@ -381,7 +472,6 @@ def _unmark_in_flight(msg_id):
 async def fetch_posts_page(offset_id, limit):
     posts = []
     last_id = None
-    ai_used = 0
 
     await _ensure_connected()
     async for msg in _client.iter_messages(channel, limit=limit, offset_id=offset_id):
@@ -389,39 +479,38 @@ async def fetch_posts_page(offset_id, limit):
             continue
 
         text = msg.text or ""
-        category = detect_category(text)
-        brand = detect_brand(text)
+        category = ""
+        brand = ""
         name = ""
         tags = []
 
         meta = get_post_meta(msg.id)
-        if meta:
-            if meta["category"]:
-                category = meta["category"]
-            if meta["brand"]:
-                brand = meta["brand"]
-            if meta["name"]:
-                name = meta["name"]
+        if meta and (meta["category"] or meta["brand"] or meta["name"] or meta["tags"]):
+            category = meta["category"] or ""
+            brand = meta["brand"] or ""
+            name = meta["name"] or ""
             if meta["tags"]:
                 try:
                     tags = json.loads(meta["tags"])
                 except Exception:
                     tags = []
-        elif AI_ENABLED and ai_used < AI_MAX_PER_PAGE and text:
-            ai_used += 1
-            ai = await asyncio.to_thread(ai_classify, text)
-            if ai:
-                category = ai.get("category") or category
-                brand = ai.get("brand") or brand
-                name = ai.get("name") or ""
-                tags = ai.get("tags") or []
+
+            if not category or not brand or not name or not tags:
+                c, b, n, t = smart_classify(text)
+                category = category or c
+                brand = brand or b
+                name = name or n
+                tags = tags or t
                 upsert_post_meta(msg.id, category=category, brand=brand, name=name, tags=tags)
+        else:
+            category, brand, name, tags = smart_classify(text)
+            upsert_post_meta(msg.id, category=category, brand=brand, name=name, tags=tags)
 
         posts.append({
             "text": clean_links(text),
             "image_id": msg.id if msg.photo else None,
-            "category": category,
-            "brand": brand,
+            "category": category or "autre",
+            "brand": brand or "autre",
             "name": name,
             "tags": tags
         })
@@ -505,6 +594,13 @@ def init_db():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS brand_extra (
+                name TEXT PRIMARY KEY
+            )
+            """
+        )
         conn.commit()
 
 
@@ -530,6 +626,26 @@ def get_user_by_google_sub(sub):
             "SELECT id, email, name, google_sub FROM users WHERE google_sub = ?",
             (sub,),
         ).fetchone()
+
+
+def load_extra_brands():
+    with get_db() as conn:
+        rows = conn.execute("SELECT name FROM brand_extra").fetchall()
+        for row in rows:
+            if row["name"]:
+                BRANDS_EXTRA.add(row["name"])
+
+
+def add_extra_brand(name):
+    name = (name or "").strip().lower()
+    if not name or name in BRANDS_EXTRA or name in BRANDS:
+        return
+    if len(name) < 2 or name in BRAND_STOPWORDS:
+        return
+    with get_db() as conn:
+        conn.execute("INSERT OR IGNORE INTO brand_extra (name) VALUES (?)", (name,))
+        conn.commit()
+    BRANDS_EXTRA.add(name)
 
 
 def get_post_meta(msg_id):
@@ -599,6 +715,7 @@ def current_user():
 
 
 init_db()
+load_extra_brands()
 
 
 @app.route("/image/<int:msg_id>")
